@@ -15,7 +15,7 @@
 #   2. Eagle 3-month job records (data.nlr.gov submission 152);
 #   3. Kestrel monthly Parquet (data.nlr.gov submission 302) — pulled member by
 #      member over HTTP range requests, so the 697 MB zip is never downloaded;
-#   4. Eagle 11M Parquet (OEDI 5860) — see EAGLE_11M_URL below.
+#   4. Eagle 11M Parquet (OEDI 5860, data.openei.org/files/5860).
 #
 set -euo pipefail
 
@@ -25,7 +25,7 @@ cd "$REPO_ROOT"
 DATA_DIR="${DATA_DIR:-$REPO_ROOT/data}"
 ZENODO_DIR="${ZENODO_DIR:-$REPO_ROOT/21913139}"
 ZENODO_RECORD="${ZENODO_RECORD:-21913139}"
-EAGLE_11M_URL="${EAGLE_11M_URL:-}"
+EAGLE_11M_URL="${EAGLE_11M_URL:-https://data.openei.org/files/5860/eagle_data.parquet}"
 SALT_FILE="$REPO_ROOT/.bench_salt"
 
 log()  { printf '\n== %s\n' "$*"; }
@@ -101,23 +101,14 @@ fi
 # ---------------------------------------------------------------------------
 # 4. Eagle 11M Parquet (OEDI 5860)
 # ---------------------------------------------------------------------------
-# This one has no stable direct link we can rely on, so it is explicit rather
-# than guessed: set EAGLE_11M_URL to the file's download link, or drop the file
-# in place yourself. Everything else works without it.
+# Override EAGLE_11M_URL if the link ever moves, or drop the file in place
+# yourself. Everything else still works without this dataset.
 if [ -f "$DATA_DIR/eagle_data.parquet" ]; then
     log "Eagle 11M already present"
-elif [ -n "$EAGLE_11M_URL" ]; then
-    log "Fetching Eagle 11M (OEDI 5860)"
+else
+    log "Fetching Eagle 11M (OEDI 5860, ~253 MB)"
     curl -L --fail --retry 4 --retry-all-errors --retry-delay 3 \
          -o "$DATA_DIR/eagle_data.parquet" "$EAGLE_11M_URL"
-else
-    warn "Eagle 11M (OEDI 5860) NOT downloaded."
-    warn "  Either set EAGLE_11M_URL to the Parquet download link:"
-    warn "    EAGLE_11M_URL='https://...' bash scripts/fetch_all_data.sh"
-    warn "  or place the file at $DATA_DIR/eagle_data.parquet"
-    warn "  (catalogue: https://catalog.data.gov/dataset/nrel-eagle-supercomputer-jobs)"
-    warn "  Kestrel and the Eagle 3-month data are unaffected; only the"
-    warn "  11M-row Eagle dataset will be missing."
 fi
 
 # ---------------------------------------------------------------------------
@@ -151,6 +142,20 @@ for label, files in checks:
     else:
         missing += 1
         print(f"  MISSING {label}")
+
+# A partial or wrong-parquet download is worse than none, so check the shape.
+eagle = os.path.join(data_dir, "eagle_data.parquet")
+if os.path.exists(eagle):
+    try:
+        import pyarrow.parquet as pq
+
+        rows = pq.ParquetFile(eagle).metadata.num_rows
+        expected = 11_030_377
+        flag = "ok   " if rows == expected else "CHECK"
+        print(f"  {flag} Eagle 11M rows       {rows:,} (expected {expected:,})")
+    except Exception as exc:                      # noqa: BLE001 - report and continue
+        print(f"  CHECK Eagle 11M unreadable: {exc}")
+
 sys.exit(1 if missing == 3 else 0)
 PY
 
