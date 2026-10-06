@@ -1,0 +1,5 @@
+# Dependencies for the benchmark harness (separate from lattice24-assess).
+polars>=1.0
+pyarrow>=21
+numpy>=1.24
+pytest>=8

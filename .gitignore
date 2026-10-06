@@ -5,3 +5,17 @@ build/
 *.egg-info/
 lattice24_report/
 .venv/
+
+# --- Datasets and generated artifacts: never committed -------------------
+# The benchmark is reproducible from scripts/fetch_all_data.sh, so no data
+# (raw or derived) belongs in version control.
+data/
+21913139/
+21913139.zip
+runs/
+results/
+windows/
+
+# Local hash salt for sources that ship source-level identifiers. Regenerated
+# per clone by scripts/fetch_all_data.sh; must never be shared or committed.
+.bench_salt
