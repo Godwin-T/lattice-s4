@@ -24,12 +24,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
+import tempfile
 from pathlib import Path
 
 import polars as pl
 
 WINDOW = 24
 FEATURES = ("f_mean", "f_std", "f_range", "f_madiff")
+
+# How many users' windows to build before spilling to disk. Windowing is
+# per-user, so chunking cannot change the result; it only bounds memory.
+WINDOW_USERS_PER_CHUNK = 150
 
 PREDICTION_SCHEMA = {
     "run_id": pl.String,
@@ -155,7 +161,8 @@ def file_sha256(path: str | Path) -> str:
 
 
 def ensure_windows(lf: pl.LazyFrame, canonical_path: str | Path,
-                   cache_dir: str | Path, rebuild: bool = False) -> Path:
+                   cache_dir: str | Path, rebuild: bool = False,
+                   users_per_chunk: int = WINDOW_USERS_PER_CHUNK) -> Path:
     """
     Build the window table once and keep it as Parquet.
 
@@ -180,12 +187,40 @@ def ensure_windows(lf: pl.LazyFrame, canonical_path: str | Path,
         except (OSError, ValueError, KeyError):
             pass
 
-    frame = build_windows(lf).collect()
-    frame.write_parquet(cache)
+    # Build in user-sized chunks. Windowing is a per-user operation — the
+    # rolling statistics and the as-of join never cross a user boundary — so the
+    # result is identical, but peak memory is one chunk instead of the whole
+    # table. Materialising all 9.3M Kestrel windows at once is what got the
+    # process OOM-killed on a 5 GB machine.
+    users = lf.select("user_hash").unique().collect()["user_hash"].to_list()
+    if not users:
+        raise SystemExit("no users to build windows for")
+
+    scratch = Path(tempfile.mkdtemp(prefix="windows_"))
+    shards: list[Path] = []
+    rows = scoreable = 0
+    try:
+        for i in range(0, len(users), users_per_chunk):
+            batch = users[i:i + users_per_chunk]
+            frame = build_windows(lf.filter(pl.col("user_hash").is_in(batch))).collect()
+            shard = scratch / f"part-{i:05d}.parquet"
+            frame.write_parquet(shard)
+            shards.append(shard)
+            rows += frame.height
+            scoreable += int(frame["scoreable"].sum())
+            print(f"    windows: {rows:,} rows "
+                  f"({min(i + users_per_chunk, len(users)):,}/{len(users):,} users)",
+                  flush=True)
+        # Stream the shards into the single cached file; nothing large is held.
+        pl.scan_parquet([str(p) for p in shards]).sink_parquet(cache)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
     meta.write_text(json.dumps({
         "canonical": str(canonical_path),
         "canonical_sha256": fingerprint,
-        "rows": frame.height,
-        "scoreable": int(frame["scoreable"].sum()),
+        "rows": rows,
+        "scoreable": scoreable,
+        "users_per_chunk": users_per_chunk,
     }, indent=2), encoding="utf-8")
     return cache
