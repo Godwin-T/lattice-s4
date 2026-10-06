@@ -2,4 +2,5 @@
 polars>=1.0
 pyarrow>=21
 numpy>=1.24
+scikit-learn>=1.0      # Arm A's logistic regression, and isotonic calibration
 pytest>=8
