@@ -163,22 +163,53 @@ PY
 # 7. Optionally build the derived tables and the frozen splits
 # ---------------------------------------------------------------------------
 if [ "${1:-}" = "--build" ]; then
-    log "Building canonical tables (this is the CPU-heavy part)"
-    python3 -m bench.ingest.cli --dataset eagle_jsonl \
-        --raw "$ZENODO_DIR"/anon_jobs_*.json --out "$DATA_DIR/canonical"
-    python3 -m bench.ingest.cli --dataset kestrel \
-        --raw "$ZENODO_DIR"/kestrel/*.parquet --out "$DATA_DIR/canonical"
-    if [ -f "$DATA_DIR/eagle_data.parquet" ]; then
-        python3 -m bench.ingest.cli --dataset eagle_parquet \
-            --raw "$DATA_DIR/eagle_data.parquet" --out "$DATA_DIR/canonical"
+    failures=0
+    step() {
+        local label="$1"; shift
+        log "$label"
+        if ! "$@"; then
+            warn "FAILED: $label (continuing with the remaining steps)"
+            failures=$((failures + 1))
+        fi
+    }
+
+    if compgen -G "$ZENODO_DIR/anon_jobs_*.json" > /dev/null; then
+        step "Canonical table: Eagle 3-month" \
+            python3 -m bench.ingest.cli --dataset eagle_jsonl \
+            --raw "$ZENODO_DIR"/anon_jobs_*.json --out "$DATA_DIR/canonical"
+    else
+        warn "skipping Eagle 3-month ingest: no anon_jobs_*.json present"
     fi
 
-    log "Building the frozen splits"
+    if compgen -G "$ZENODO_DIR/kestrel/*.parquet" > /dev/null; then
+        step "Canonical table: Kestrel" \
+            python3 -m bench.ingest.cli --dataset kestrel \
+            --raw "$ZENODO_DIR"/kestrel/*.parquet --out "$DATA_DIR/canonical"
+    else
+        warn "skipping Kestrel ingest: no 21913139/kestrel/*.parquet present"
+    fi
+
+    if [ -f "$DATA_DIR/eagle_data.parquet" ]; then
+        step "Canonical table: Eagle 11M" \
+            python3 -m bench.ingest.cli --dataset eagle_parquet \
+            --raw "$DATA_DIR/eagle_data.parquet" --out "$DATA_DIR/canonical"
+    else
+        warn "skipping Eagle 11M ingest: $DATA_DIR/eagle_data.parquet not present"
+    fi
+
     for dataset in eagle_parquet kestrel; do
-        python3 -m bench.splits.cli --dataset "$dataset" \
-            --canonical "$DATA_DIR/canonical/$dataset.parquet" \
-            --out "$DATA_DIR/manifests"
+        if [ -f "$DATA_DIR/canonical/$dataset.parquet" ]; then
+            step "Frozen splits: $dataset" \
+                python3 -m bench.splits.cli --dataset "$dataset" \
+                --canonical "$DATA_DIR/canonical/$dataset.parquet" \
+                --out "$DATA_DIR/manifests"
+        fi
     done
+
+    if [ "$failures" -gt 0 ]; then
+        warn "$failures build step(s) failed — see the messages above"
+        exit 1
+    fi
 fi
 
 log "Done"

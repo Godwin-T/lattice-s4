@@ -41,11 +41,19 @@ def load(paths: list[str], salt: str | None = None) -> pl.DataFrame:
     `salt` is accepted for interface uniformity and ignored: this source already
     ships hashed identifiers, so there is nothing to hash (§3.1).
     """
-    frames = []
-    for p in paths:
-        frame = pl.read_ndjson(p, infer_schema_length=None)
-        frames.append(frame.with_columns(pl.lit(str(p)).alias("source_file")))
-    df = frames[0] if len(frames) == 1 else pl.concat(frames, how="vertical_relaxed")
+    # Each file is mapped to the canonical shape *individually* before anything
+    # is combined. The files do not agree on JSON key order, and Polars will not
+    # concatenate frames whose columns appear in different orders -- so mapping
+    # first (which fixes the column set and order) is what makes the three
+    # months stackable.
+    frames = [map_frame(pl.read_ndjson(p, infer_schema_length=None), str(p))
+              for p in sorted(paths)]
+    return frames[0] if len(frames) == 1 else pl.concat(frames, how="vertical_relaxed")
+
+
+def map_frame(df: pl.DataFrame, source_file: str) -> pl.DataFrame:
+    """Map one month's rows into the canonical shape."""
+    df = df.with_columns(pl.lit(str(source_file)).alias("source_file"))
 
     # Durations first: the modelled-energy formula depends on elapsed_s.
     elapsed = duration_expr("wallclock_used", "iso8601")

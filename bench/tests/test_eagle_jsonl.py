@@ -84,3 +84,23 @@ def test_filters_drop_non_terminal_states(tmp_path):
     kept, stats = apply_filters(df)
     assert stats["dropped_non_terminal_state"] == 1
     assert kept.height == 1
+
+
+def test_load_stacks_files_that_disagree_on_key_order(tmp_path):
+    """
+    The three published months are JSON Lines with the same keys in *different
+    orders*. Concatenating them before mapping fails; mapping each file to the
+    canonical shape first is what makes them stackable.
+    """
+    rows = [_row(job_id=1), _row(job_id=2, state="COMPLETED")]
+    first = tmp_path / "anon_jobs_2019-12.json"
+    second = tmp_path / "anon_jobs_2020-04.json"
+    first.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+    second.write_text(
+        "\n".join(json.dumps(dict(reversed(list(r.items())))) for r in rows),
+        encoding="utf-8")
+
+    df = eagle_jsonl.load([str(first), str(second)])
+    assert df.height == 4
+    assert set(df["source_file"].unique().to_list()) == {str(first), str(second)}
+    assert df.schema == eagle_jsonl.load([str(first)]).schema
