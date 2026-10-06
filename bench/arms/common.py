@@ -33,9 +33,12 @@ import polars as pl
 WINDOW = 24
 FEATURES = ("f_mean", "f_std", "f_range", "f_madiff")
 
-# How many users' windows to build before spilling to disk. Windowing is
-# per-user, so chunking cannot change the result; it only bounds memory.
-WINDOW_USERS_PER_CHUNK = 150
+# How many *rows* of windows to build before spilling to disk. Windowing is a
+# per-user operation, so chunking cannot change the result; it only bounds
+# memory. The cap is on rows rather than users because user sizes are wildly
+# unequal -- one user can hold hundreds of thousands of jobs, so "N users" says
+# almost nothing about how much memory a chunk will need.
+WINDOW_MAX_CHUNK_ROWS = 250_000
 
 PREDICTION_SCHEMA = {
     "run_id": pl.String,
@@ -162,7 +165,7 @@ def file_sha256(path: str | Path) -> str:
 
 def ensure_windows(lf: pl.LazyFrame, canonical_path: str | Path,
                    cache_dir: str | Path, rebuild: bool = False,
-                   users_per_chunk: int = WINDOW_USERS_PER_CHUNK) -> Path:
+                   max_chunk_rows: int = WINDOW_MAX_CHUNK_ROWS) -> Path:
     """
     Build the window table once and keep it as Parquet.
 
@@ -187,29 +190,29 @@ def ensure_windows(lf: pl.LazyFrame, canonical_path: str | Path,
         except (OSError, ValueError, KeyError):
             pass
 
-    # Build in user-sized chunks. Windowing is a per-user operation — the
-    # rolling statistics and the as-of join never cross a user boundary — so the
+    # Build in row-bounded chunks. Windowing is a per-user operation — neither
+    # the rolling statistics nor the as-of join crosses a user boundary — so the
     # result is identical, but peak memory is one chunk instead of the whole
-    # table. Materialising all 9.3M Kestrel windows at once is what got the
-    # process OOM-killed on a 5 GB machine.
-    users = lf.select("user_hash").unique().collect()["user_hash"].to_list()
-    if not users:
+    # table. The bound is on rows because users differ enormously in size.
+    counts = lf.group_by("user_hash").len().collect()
+    if counts.height == 0:
         raise SystemExit("no users to build windows for")
+    chunks = _pack_users(counts, max_chunk_rows)
 
     scratch = Path(tempfile.mkdtemp(prefix="windows_"))
     shards: list[Path] = []
     rows = scoreable = 0
     try:
-        for i in range(0, len(users), users_per_chunk):
-            batch = users[i:i + users_per_chunk]
+        for i, (batch, expected) in enumerate(chunks):
             frame = build_windows(lf.filter(pl.col("user_hash").is_in(batch))).collect()
             shard = scratch / f"part-{i:05d}.parquet"
             frame.write_parquet(shard)
             shards.append(shard)
             rows += frame.height
             scoreable += int(frame["scoreable"].sum())
-            print(f"    windows: {rows:,} rows "
-                  f"({min(i + users_per_chunk, len(users)):,}/{len(users):,} users)",
+            print(f"    chunk {i + 1}: {frame.height:,} rows "
+                  f"({len(batch)} user(s), ~{expected:,} expected) "
+                  f"| running total {rows:,} | peak RSS {_peak_rss_mb():,.0f} MB",
                   flush=True)
         # Stream the shards into the single cached file; nothing large is held.
         pl.scan_parquet([str(p) for p in shards]).sink_parquet(cache)
@@ -221,6 +224,37 @@ def ensure_windows(lf: pl.LazyFrame, canonical_path: str | Path,
         "canonical_sha256": fingerprint,
         "rows": rows,
         "scoreable": scoreable,
-        "users_per_chunk": users_per_chunk,
+        "max_chunk_rows": max_chunk_rows,
     }, indent=2), encoding="utf-8")
     return cache
+
+
+def _pack_users(counts: pl.DataFrame, max_rows: int):
+    """
+    Group users into batches whose total job count stays near `max_rows`.
+
+    Biggest users first, so a giant lands in a batch of its own rather than
+    dragging a full complement of ordinary users along with it.
+    """
+    ordered = counts.sort("len", descending=True)
+    batch: list[str] = []
+    size = 0
+    for user, n in ordered.iter_rows():
+        n = int(n)
+        if batch and size + n > max_rows:
+            yield batch, size
+            batch, size = [], 0
+        batch.append(user)
+        size += n
+    if batch:
+        yield batch, size
+
+
+def _peak_rss_mb() -> float:
+    """Peak resident memory so far, in MB. Diagnostic only; 0.0 if unavailable."""
+    try:
+        import resource
+
+        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
+    except Exception:                                  # noqa: BLE001 - diagnostic
+        return 0.0

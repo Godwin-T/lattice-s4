@@ -29,7 +29,7 @@ import polars as pl
 
 from ..splits.eligibility import eligible_summary, eligible_users
 from .common import (
-    FEATURES, WINDOW_USERS_PER_CHUNK, ensure_windows, load_manifest,
+    FEATURES, WINDOW_MAX_CHUNK_ROWS, ensure_windows, load_manifest,
     write_predictions,
 )
 
@@ -62,7 +62,7 @@ def run(*, manifest_path: str, canonical_path: str, outdir: str,
         seed: int = 42, calibrate: bool = False, control_repeats: int = 3,
         control_folds: int | None = None, windows_dir: str | None = None,
         rebuild_windows: bool = False, folds_limit: int | None = None,
-        users_per_chunk: int = WINDOW_USERS_PER_CHUNK) -> dict:
+        max_chunk_rows: int = WINDOW_MAX_CHUNK_ROWS) -> dict:
     """
     Score every fold of a manifest and write the hand-in table.
 
@@ -93,7 +93,7 @@ def run(*, manifest_path: str, canonical_path: str, outdir: str,
     eligible = lf.filter(pl.col("user_hash").is_in(users["user_hash"].to_list()))
     cache_dir = Path(windows_dir) if windows_dir else Path(outdir).parent / "windows"
     cache = ensure_windows(eligible, canonical_path, cache_dir,
-                           rebuild=rebuild_windows, users_per_chunk=users_per_chunk)
+                           rebuild=rebuild_windows, max_chunk_rows=max_chunk_rows)
     windows = pl.scan_parquet(cache)
 
     rows, fold_aucs, control_aucs = [], [], []

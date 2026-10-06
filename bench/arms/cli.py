@@ -41,10 +41,10 @@ def main(argv=None) -> int:
                     help="where to cache the window table (default: <out>/../windows)")
     ap.add_argument("--rebuild-windows", action="store_true",
                     help="rebuild the cached window table even if it exists")
-    ap.add_argument("--users-per-chunk", type=int, default=150,
-                    help="users per chunk when building the window cache "
-                         "(default 150). Lower it if the machine still runs out "
-                         "of memory; it does not change the result.")
+    ap.add_argument("--chunk-rows", type=int, default=250_000,
+                    help="maximum rows per chunk when building the window cache "
+                         "(default 250000). Lower it if the machine still runs "
+                         "out of memory; it does not change the result.")
     ap.add_argument("--threads", type=int, default=2,
                     help="CPU threads to use (default 2, so the rest of the "
                          "machine stays responsive)")
@@ -70,7 +70,7 @@ def main(argv=None) -> int:
                    outdir=args.out, seed=args.seed, calibrate=args.calibrate,
                    control_folds=args.control_folds, windows_dir=args.windows_dir,
                    rebuild_windows=args.rebuild_windows, folds_limit=args.folds,
-                   users_per_chunk=args.users_per_chunk)
+                   max_chunk_rows=args.chunk_rows)
     else:                                     # pragma: no cover - guarded above
         raise SystemExit(f"arm {args.arm!r} is not implemented yet")
 
