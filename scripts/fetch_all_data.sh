@@ -90,12 +90,10 @@ if compgen -G "$ZENODO_DIR/kestrel/*.parquet" > /dev/null; then
     log "Kestrel months already present"
 else
     log "Fetching Kestrel months (data.nlr.gov submission 302)"
-    if [ ! -f "$ZENODO_DIR/kestrel_fetch.py" ]; then
-        warn "kestrel_fetch.py missing — step 1 did not complete"
-        exit 1
-    fi
-    python3 "$ZENODO_DIR/kestrel_fetch.py" --list
-    python3 "$ZENODO_DIR/kestrel_fetch.py" --all --out "$ZENODO_DIR/kestrel"
+    # Our own copy, not the deposit's: the deposit version lists the archive but
+    # silently downloads nothing when asked for --all.
+    python3 "$REPO_ROOT/scripts/kestrel_fetch.py" --list
+    python3 "$REPO_ROOT/scripts/kestrel_fetch.py" --all --out "$ZENODO_DIR/kestrel"
 fi
 
 # ---------------------------------------------------------------------------
