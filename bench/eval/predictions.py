@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import polars as pl
 
+from ..arms.common import with_row_id
 from ..splits.eligibility import eligible_users
 from .config import POSITIVE_STATES, PREDICTION_COLUMNS
 
@@ -32,15 +33,21 @@ def expected_test_rows(canonical_path: str, manifest: dict) -> pl.LazyFrame:
     """
     Every row a run is required to score: the eligible population, restricted to
     the manifest's test months.
+
+    Keyed by `row_id`, not `job_id`. The manifest counts *rows* —
+    `Σ fold.n_test` is the number of rows in the open test months, not the number
+    of distinct ids — and `job_id` is not unique in the canonical table, so it
+    cannot say whether a given test row was scored. `row_id` is derived here by
+    the same rule the arms use (`arms.common.with_row_id`), from the same file.
     """
-    lf = pl.scan_parquet(canonical_path)
+    lf = with_row_id(pl.scan_parquet(canonical_path))
     users = eligible_users(lf)                      # same rule the arms apply
     months = [f["test_month"] for f in manifest["folds"]]
     return (
         lf.filter(pl.col("user_hash").is_in(users["user_hash"].to_list()))
         .with_columns(pl.col("submit_time").dt.strftime("%Y-%m").alias("test_month"))
         .filter(pl.col("test_month").is_in(months))
-        .select(["job_id", "test_month"])
+        .select(["row_id", "job_id", "test_month"])
     )
 
 
@@ -55,9 +62,9 @@ def check_contract(preds: pl.DataFrame, manifest: dict,
     if preds.height == 0:
         return ["predictions table is empty"]
 
-    duplicates = preds.height - preds["job_id"].n_unique()
+    duplicates = preds.height - preds["row_id"].n_unique()
     if duplicates:
-        problems.append(f"{duplicates} job(s) were scored more than once")
+        problems.append(f"{duplicates} row(s) were scored more than once")
 
     known_months = {f["test_month"] for f in manifest["folds"]}
     stray = sorted(set(preds["test_month"].unique().to_list()) - known_months)
@@ -65,12 +72,17 @@ def check_contract(preds: pl.DataFrame, manifest: dict,
         problems.append(f"predictions mention months outside the manifest: {stray}")
 
     expected = expected_test_rows(canonical_path, manifest).collect()
-    scored = preds.select(["job_id", "test_month"])
+    # `row_id` is unique on both sides, so these anti-joins count exactly: no
+    # multiplication, and a row filed under the wrong month counts as both extra
+    # and absent rather than passing. Keyed on `job_id` they would multiply —
+    # one kestrel id covers 10,000 rows.
+    key = ["row_id", "test_month"]
+    scored = preds.select(key)
 
-    extra = scored.join(expected, on=["job_id", "test_month"], how="anti")
+    extra = scored.join(expected.select(key), on=key, how="anti")
     if extra.height:
-        problems.append(f"{extra.height} predicted job(s) are not test rows")
-    absent = expected.join(scored, on=["job_id", "test_month"], how="anti")
+        problems.append(f"{extra.height} predicted row(s) are not test rows")
+    absent = expected.select(key).join(scored, on=key, how="anti")
     if absent.height:
         problems.append(f"{absent.height} test row(s) were not scored at all")
 
@@ -78,13 +90,36 @@ def check_contract(preds: pl.DataFrame, manifest: dict,
 
 
 def attach_truth(preds: pl.DataFrame, canonical_path: str,
-                 task: str) -> pl.DataFrame:
-    """Join the label and the energy reading onto the predictions."""
-    truth = pl.scan_parquet(canonical_path).select(
-        ["job_id", "state", "energy_j", "energy_tier"])
+                 task: str, *, with_probability: bool = False) -> pl.DataFrame:
+    """
+    Join the label and the energy reading onto the predictions.
+
+    On `row_id`, which is one-to-one. Joining the canonical table on `job_id`
+    instead multiplies each prediction by the number of canonical rows sharing
+    its id — up to 10,000 on kestrel — so a 7M-row hand-in table would not fit in
+    memory.
+
+    Both sides are projected to just the columns the evaluator reads, which is
+    what keeps peak memory flat. The hand-in table's own `run_id`, `arm`, `task`,
+    `fold_id` and `latency_ms` are dead weight here, and carrying `energy_tier` —
+    or the predictions' `job_id` — onto nine million rows buys nothing the
+    metrics use. `user_hash` *is* taken from the truth side so that a user-level
+    bootstrap groups by a stable key; the predictions' `job_id` cannot serve,
+    being neither unique nor a user.
+
+    `probability` is the one hand-in column the ranking metrics do not read but
+    calibration does, so it is carried only when asked for: it is a float per
+    row, and nothing else in this module wants it.
+    """
+    keep = ["row_id", "test_month", "score"]
+    if with_probability and "probability" in preds.columns:
+        keep.append("probability")
+    truth = with_row_id(pl.scan_parquet(canonical_path)).select(
+        ["row_id", "state", "energy_j", "user_hash"])
     return (
         preds.lazy()
-        .join(truth, on="job_id", how="left", coalesce=True)
+        .select(keep)
+        .join(truth, on="row_id", how="left")
         .with_columns(label_expr(task))
         .collect()
     )
