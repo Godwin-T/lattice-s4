@@ -18,7 +18,7 @@ import argparse
 import os
 from pathlib import Path
 
-ARMS = ("A", "B1", "B2", "B3")
+ARMS = ("A", "B1", "B2", "B3", "D")
 
 # The metadata keys the report block reads. Declared here rather than inline so a
 # new arm that omits one fails a test instead of failing *after* its run — the
@@ -63,6 +63,13 @@ def arm_kwargs(arm: str, args) -> dict:
             "features_dir": args.windows_dir,
             "rebuild_features": args.rebuild_windows, "num_threads": args.threads,
             "train_row_cap": args.train_rows, "device": args.device,
+        }
+    if arm == "D":
+        return common | {
+            "features_dir": args.windows_dir,
+            "domain_features_dir": args.domain_features_dir,
+            "rebuild_features": args.rebuild_windows,
+            "num_threads": args.threads,
         }
     raise SystemExit(f"arm {arm!r} is not implemented yet")
 
@@ -120,6 +127,8 @@ def build_parser() -> argparse.ArgumentParser:
                          "quick check (omit for a full run)")
     ap.add_argument("--windows-dir", default=None,
                     help="where to cache the window table (default: <out>/../windows)")
+    ap.add_argument("--domain-features-dir", default=None,
+                    help="where to cache Arm D domain features")
     ap.add_argument("--rebuild-windows", action="store_true",
                     help="rebuild the cached window table even if it exists")
     ap.add_argument("--chunk-rows", type=int, default=250_000,
