@@ -126,6 +126,14 @@ def run(*, manifest_path: str, canonical_path: str, outdir: str,
         })
     for task in tasks:
         task_meta = meta["tasks"][task]
-        (Path(outdir) / task_meta["run_id"] / "metadata.json").write_text(
+        run_dir = Path(outdir) / task_meta["run_id"]
+        predictions = run_dir / "predictions.parquet"
+        # B1's shared blank-row helper has a definition-time default of B1.
+        # D reuses that runner, so stamp the hand-in rows explicitly after the
+        # run; otherwise the evaluator sees a D directory containing B1 rows.
+        frame = pl.read_parquet(predictions).with_columns(
+            pl.lit(ARM).alias("arm"))
+        frame.write_parquet(predictions)
+        (run_dir / "metadata.json").write_text(
             json.dumps(task_meta, indent=2), encoding="utf-8")
     return meta
