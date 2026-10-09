@@ -214,7 +214,11 @@ def _collapse(x, mask):
     """
     import torch
 
-    lengths = mask.sum(dim=1)
+    # PyTorch's pack_padded_sequence requires lengths to be a 1-D CPU
+    # int64 tensor, even when the sequence data and model are on CUDA. Keep
+    # the gathered sequence on the model device; only the metadata moves to
+    # CPU for the packing call.
+    lengths = mask.sum(dim=1).to(dtype=torch.int64).cpu()
     order = torch.argsort((~mask).to(torch.int8), dim=1, stable=True)
     return torch.gather(x, 1, order.unsqueeze(-1).expand_as(x)), lengths
 
@@ -253,7 +257,7 @@ def _gru(n_inputs: int, params: dict):
             emb = h[-1]
             # A zero-length row's one-step pass over zero padding would otherwise
             # emit a bias-driven embedding indistinguishable from a real one.
-            emb = emb * (lengths > 0).unsqueeze(1).to(emb.dtype)
+            emb = emb * (lengths.to(emb.device) > 0).unsqueeze(1).to(emb.dtype)
             return self.head(emb).squeeze(-1)
 
     return _GRU()
