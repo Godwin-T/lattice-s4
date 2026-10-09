@@ -39,7 +39,10 @@ from .common import FEATURES, RULE_SAFE
 # rather than silently mis-read. Independent of common.CACHE_VERSION: the two
 # tables evolve for different reasons.
 # v2: the cache also carries T2's label (`label_t2`); v1 carried T1's only.
-FEATURE_VERSION = 2
+# Bumped after row_id became authoritative across chunked cache builds.  A
+# stale v2 cache can contain repeated per-chunk row IDs and must never be reused
+# by the evaluator.
+FEATURE_VERSION = 3
 
 # The four window features Arm A scores on, then the request fields, then the
 # history aggregates. Order is the column order of the cached table.
