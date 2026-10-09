@@ -38,7 +38,7 @@ DEVICE=${B23_DEVICE:-auto}
 export POLARS_MAX_THREADS="$THREADS" OMP_NUM_THREADS="$THREADS" \
        OPENBLAS_NUM_THREADS="$THREADS" MKL_NUM_THREADS="$THREADS" \
        NUMEXPR_NUM_THREADS="$THREADS"
-ROOT=/home/godwin/Documents/Workflow/Work/Peep/lattice24-assess
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT" || exit 1
 
 MANIFEST=data/manifests/eagle_parquet.folds.json
